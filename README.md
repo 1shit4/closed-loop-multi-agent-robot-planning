@@ -1,149 +1,110 @@
-# 6-DoF GraspMAS
+# Closed-Loop Multi-Agent Planning for Robotic Decluttering
 
-**GraspMAS** with its planar 2D grasp head replaced by **GraspGen-X**, so
-language-driven grasping produces true 6-DoF SE(3) poses instead of image-plane
-rectangles. Runs entirely on **CPU** and on a **free LLM tier**.
+**A closed-loop, multi-agent framework for robotic scene decluttering that continuously evaluates task progress and replans using execution feedback.**
 
+## Overview
+
+A robot asked to retrieve an object from a cluttered scene may need to move other objects before the target becomes graspable. A single grasp prediction or an open-loop sequence of actions cannot reliably handle changing visibility, obstructed approaches, or unexpected execution outcomes.
+
+This project develops a **closed-loop planning and grasping pipeline** that repeatedly observes the scene, identifies obstructions, selects objects to relocate, generates grasps and placements, evaluates the outcome, and updates its plan. It combines a task-level decluttering loop with language-guided, six-degree-of-freedom grasp generation. The implementation builds on [GraspMAS](https://github.com/Fsoft-AIC/GraspMAS) and integrates [GraspGen-X](https://github.com/NVlabs/GraspGenX).
+
+Motivated by the challenges of **long-horizon robotic autonomy**, the system maintains task context across successive actions and revises its decisions when execution outcomes differ from expectations.
+
+## System architecture
+
+```mermaid
+flowchart TD
+    A[Language goal + scene observation] --> B[Identify target and scene objects]
+    B --> C[Analyze occlusion, approach and proximity constraints]
+    C --> D[Select target or object to relocate]
+    D --> E[Language-guided 6-DoF grasp generation]
+    E --> F[Check grasp and plan placement]
+    F --> G[Execute simulated scene update]
+    G --> H[Observe updated scene]
+    H --> I[Evaluate action outcome and goal progress]
+    I --> J{Target reachable with a valid grasp?}
+    J -- No --> K[Revise task plan and scene state]
+    K --> C
+    J -- Yes --> L[Return target grasp and task outcome]
 ```
-"grasp the mustard bottle by its cap"
-        │
-        ├─ GroundingDINO + SAM + VLPart  ──▶  mask of the cap
-        ├─ depth (sensor, or monocular)  ──▶  metric point cloud, camera frame
-        ├─ GraspGen-X diffusion (CPU)    ──▶  6-DoF SE(3) pose + confidence
-        └─ Planner / Coder / Observer loop critiques and re-plans
-```
 
-| | |
+The system separates two levels of reasoning:
+
+- **Task-level planning:** determines which object to pursue or move, maintains object identities and the task goal, and revises decisions after each action.
+- **Grasp-level reasoning:** uses the Planner–Coder–Observer loop inherited from GraspMAS to generate and assess language-conditioned grasps, with GraspGen-X supplying 6-DoF grasp candidates.
+
+## Implementation
+
+### Closed-loop task planning
+
+- **Scene understanding:** tracks objects across observations and analyzes blockers using occlusion, grasp-approach constraints, and object proximity.
+- **Goal and target selection:** interprets a language goal and can rank candidate objects when the target is not explicitly specified.
+- **Placement selection:** searches for relocation poses that preserve clearance and avoid placing an obstruction back in front of the target.
+- **Execution feedback:** distinguishes whether an action executed as intended from whether it made progress toward the goal. Failed or unhelpful actions can trigger a revised plan rather than a fixed retry sequence.
+- **Persistent task state:** records decisions, execution reports, and plan revisions so an interrupted run can be inspected or resumed.
+
+### Language-guided 6-DoF grasping
+
+The grasping pipeline replaces the original image-plane grasp output with an **SE(3) grasp pose**. Object- or part-level segmentation is combined with sensor depth (or a monocular-depth fallback) to form a point cloud for GraspGen-X. Candidate grasps are filtered and assessed using the target geometry, gripper configuration, and surrounding scene.
+
+The implementation includes a CPU-oriented inference path and a client–server interface that avoids reloading the grasp-generation model on every request.
+
+## Evaluation
+
+The code includes offline tests, RGB-D grasp-generation checks, and a task-level decluttering evaluation in **synthetic scenes using scene-state updates rather than physics-based object manipulation**.
+
+| Evaluation | Documented observation |
 |---|---|
-| **[`CLAUDE.md`](CLAUDE.md)** | architecture, environment recipe, invariants, every gotcha found |
-| **[`SUMMARY.md`](SUMMARY.md)** | robotics evaluation: what works, measured numbers, failure taxonomy, limitations |
-| **[`outputs/README.md`](outputs/README.md)** | artifact schema — what each run writes and why |
-| **[`docs/declutter.md`](docs/declutter.md)** | the long-horizon loop: contract, state files, robot interface |
+| Blocked-target decluttering | A target initially 32% visible became fully visible after relocating two blocking objects in a three-iteration synthetic-scene run. |
+| Failure-aware replanning | Drop and wrong-object failures prompted recovery; offset and collateral effects were reported, while tipping exposed a limitation of geometry-only evaluation. |
+| 6-DoF grasp pipeline | Tested object/part grounding, grasp-pose generation, and different gripper configurations on sample RGB-D observations. |
 
-## Quick start
+The repository documents additional runs with a live language model in the planning loop. These experiments exercise decision-making, state updates, and recovery from **injected** failures; they do not establish real-robot grasp or pick-and-place success.
 
-```bash
-bash scripts/setup.sh          # envs, repos, CPU patch, ~10 GB of assets
-scripts/run_server.sh --daemon # GraspGen-X server, loads the model once
-scripts/run_tests.sh           # 730 offline tests: no GPU, no network, no LLM spend
-```
+For methodology and test details, see [decluttering system documentation](docs/declutter.md) and the [technical evaluation notes](SUMMARY.md).
 
-Then, with no API key needed (grounding runs on local weights):
+## Repository organization
 
-```bash
-conda run -n graspmas python scripts/verify_pipeline.py
-```
+| Location | Contents |
+|---|---|
+| [`GraspMAS/declutter.py`](GraspMAS/declutter.py) | Outer planning–execution–evaluation loop |
+| [`GraspMAS/agents/task_planner.py`](GraspMAS/agents/task_planner.py) | Goal interpretation and task-level decisions |
+| [`GraspMAS/scene_registry.py`](GraspMAS/scene_registry.py) | Object identities, scene state, and blocking analysis |
+| [`GraspMAS/placement.py`](GraspMAS/placement.py) | Placement and clearance planning |
+| [`GraspMAS/evaluator.py`](GraspMAS/evaluator.py) | Action-outcome and task-progress evaluation |
+| [`GraspMAS/execution/`](GraspMAS/execution/) | Scene-mutation executor and robot-executor interface |
+| [`GraspMAS/perception3d.py`](GraspMAS/perception3d.py) | RGB-D geometry and 6-DoF grasp representations |
+| [`GraspMAS/graspgen/client.py`](GraspMAS/graspgen/client.py) | GraspGen-X integration |
+| [`GraspMAS/tests/`](GraspMAS/tests/) | Unit and integration-style tests |
+| [`scripts/`](scripts/) | Verification, setup, and experiment utilities |
 
-For the full agent loop, get a free key at <https://aistudio.google.com/apikey>.
+The `GraspMAS/` and `GraspGenX/` directories also contain upstream project code; the table highlights the components most relevant to this integration.
 
-**Use several keys.** The free tier is metered per Google Cloud *project*, so
-keys from separate accounts have separate buckets and N keys give N times the
-rate and N times the daily budget. Put one per line in `GraspMAS/api.key`
-(blank lines and `#` comments ignored), or pass them comma-separated in
-`LLM_API_KEY`, or as `LLM_API_KEY_1`, `LLM_API_KEY_2`, ... Every source is
-merged. Requests go to whichever key has been used least, and a per-minute
-rate limit rotates to another key instead of sleeping. Check what a pool can
-reach with `python -m agents.llm --probe`.
+## Running the synthetic decluttering example
 
-```bash
-export LLM_API_KEY=...          # or several: "key1,key2,key3"
-cd GraspMAS && python main_simple.py \
-    --query "grasp the mustard bottle by its cap" \
-    --image-path  ../GraspGenX/assets/sample_data/real_world/00/rgb.png \
-    --depth-path  ../GraspGenX/assets/sample_data/real_world/00/depth.npy \
-    --intrinsics  ../GraspGenX/assets/sample_data/real_world/00/meta_data.json \
-    --gripper-name franka_panda
-```
-
-`--depth-path` and `--intrinsics` are optional — without them the pipeline
-estimates metric depth monocularly, at a measured ~17% scale cost.
-
-## Clutter
-
-When the target is *not* reachable, the loop clears whatever is in the way first —
-pick, place, re-perceive, re-plan, until it can be grasped.
-
-```
-"pick up the banana"   banana is 32% visible behind a bottle and a mug
-        │
-        ├─ blocking analysis   occlusion · approach · proximity
-        ├─ pick + place        where does it go so it stops obstructing?
-        ├─ execute             then look again
-        └─ evaluate            did it work, and does it matter?
-        ▼
-   banana 100% visible, approach clear, grasped — 2 moves
-```
+After installing the project dependencies (see [`scripts/setup.sh`](scripts/setup.sh); it downloads several gigabytes of model assets), run the offline verification from the repository root:
 
 ```bash
-conda run -n graspmas python scripts/verify_declutter.py   # 75 checks, no key needed
-cd GraspMAS && python main_declutter.py --goal "pick up the banana" --target banana --no-llm
-
-# With Gemini choosing what to move next (needs a key; ~16 requests)
-cd GraspMAS && python main_declutter.py --goal "pick up the banana" --target banana -v
-
-# Omit --target and the task planner works out what the goal means (+1 request)
-cd GraspMAS && python main_declutter.py --goal "i need something to cut" \
-    --scenario affordance_choice
+conda run -n graspmas python scripts/verify_declutter.py
 ```
 
-Verified both ways: 75/75 geometric checks, and seven LLM-driven runs on 2026-08-23 —
-**all reaching the target**, each recovering from a different injected execution fault
-(`drop`, `offset`, `tip`, `collateral`, `wrong_object`). Per-iteration narratives at
-[`outputs/reports/index.md`](outputs/reports/index.md); measurements in
-[`SUMMARY.md`](SUMMARY.md) §11.
-
-Execution is **scene mutation, not physics** — objects are moved and the scene
-re-rendered, with failures injected explicitly
-(`--inject drop,offset,collateral,wrong_object`). See
-[`docs/declutter.md`](docs/declutter.md), and `scripts/summarize_run.py` to digest
-a finished run.
-
-**Target selection is tested separately on real photographs**, because every
-synthetic scenario hands the planner the label its author typed and so cannot test
-what happens when perception is wrong:
+To execute the synthetic scene-update loop without an LLM service:
 
 ```bash
-conda run -n graspmas python scripts/probe_target_selection.py \
-    --photos outputs/reports/probe_photos --report /tmp/probe.md
+cd GraspMAS
+python main_declutter.py --goal "pick up the banana" --target banana --no-llm
 ```
 
-20/20 correct on five photos — including declining "something to drink from" on a
-workbench whose detector table said `bottle`, because the image showed a
-screwdriver. Results and the standing risk (*a label is not an object*) in
-[`outputs/reports/target_selection_real_photos.md`](outputs/reports/target_selection_real_photos.md).
+To exercise recovery from a one-time injected drop:
 
-## What changed from upstream GraspMAS
-
-| | before | after |
-|---|---|---|
-| grasp output | `[quality, x, y, w, h, angle]` rectangle | 4×4 SE(3) pose, metres, camera frame |
-| approach direction | hardcoded top-down | predicted from 3D geometry (measured 3°–72° across three objects) |
-| grippers | one | 27, switchable per request |
-| depth | MiDaS relative inverse depth, cast to `int` | metric metres, sensor or monocular |
-| LLM | GPT-4o / GPT-4o-mini (paid) | Gemini Flash free tier, rate-limited with failover |
-| device | CUDA assumed | CPU, 2–13 s per grasp, 2.6 GB peak |
-| horizon | one grasp on a reachable object | clears obstructions until the target is reachable |
-| collision | object's own mask only | checked against the whole scene |
-| tests | none | 549, offline |
-
-## Repository layout
-
-```
-GraspMAS/     fork — 6-DoF grasping, free-tier LLM, tests
-GraspGenX/    upstream + patches/graspgenx_cpu.patch
-assets/       checkpoints and gripper descriptions
-outputs/      every run's artifacts (see outputs/README.md)
-scripts/      setup.sh, run_server.sh, run_tests.sh, verify_pipeline.py,
-              bench_cpu.py, plot_outputs.py, env.sh
+```bash
+python main_declutter.py --goal "pick up the banana" --target banana --no-llm --inject drop
 ```
 
-## Known constraints
+For the language-model-driven flow and grasp-generation service, consult [`docs/declutter.md`](docs/declutter.md) and the existing setup scripts. Model weights and gripper assets are external dependencies.
 
-* The **ManiSkill demo is out of scope** — SAPIEN needs a Vulkan GPU to render.
-* The **free LLM tier allows ~60–100 queries/day**; `main_batch.py` is
-  `--limit`-ed and resumable for that reason.
-* **No grasp here has been executed** on a robot or in physics. Decluttering runs
-  against scene mutation with injected failures. See [`SUMMARY.md`](SUMMARY.md) §8.
+## Acknowledgements and third-party components
 
-Upstream: [Fsoft-AIC/GraspMAS](https://github.com/Fsoft-AIC/GraspMAS) (IROS 2025) ·
-[NVlabs/GraspGenX](https://github.com/NVlabs/GraspGenX) (CVPR 2026)
+This work extends **[GraspMAS: Zero-Shot Language-driven Grasp Detection with Multi-Agent System](https://github.com/Fsoft-AIC/GraspMAS)** (Nguyen *et al.*, IROS 2025), which introduced the Planner–Coder–Observer grasp-reasoning architecture. It uses **[GraspGen-X: Cross-Embodiment 6-DOF Diffusion-based Grasping](https://github.com/NVlabs/GraspGenX)** (Han *et al.*, CVPR 2026) for grasp generation across robotic grippers.
+
+The extensions in this repository focus on integrating 6-DoF grasp output and building the task-level decluttering, placement, scene tracking, execution evaluation, and replanning infrastructure around these existing methods. The bundled upstream components retain their original license terms; see the license files within their respective directories.
