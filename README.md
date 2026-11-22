@@ -10,23 +10,20 @@ This project develops a **closed-loop planning and grasping pipeline** that repe
 
 Motivated by the challenges of **long-horizon robotic autonomy**, the system maintains task context across successive actions and revises its decisions when execution outcomes differ from expectations.
 
-## System architecture
 
-```mermaid
-flowchart TD
-    A[Language goal + scene observation] --> B[Identify target and scene objects]
-    B --> C[Analyze occlusion, approach and proximity constraints]
-    C --> D[Select target or object to relocate]
-    D --> E[Language-guided 6-DoF grasp generation]
-    E --> F[Check grasp and plan placement]
-    F --> G[Execute simulated scene update]
-    G --> H[Observe updated scene]
-    H --> I[Evaluate action outcome and goal progress]
-    I --> J{Target reachable with a valid grasp?}
-    J -- No --> K[Revise task plan and scene state]
-    K --> C
-    J -- Yes --> L[Return target grasp and task outcome]
-```
+## System Architecture
+
+The framework follows a closed-loop planning and execution workflow:
+
+1. **Scene understanding:** Observe the scene, interpret the task goal, and identify the target object and its surrounding obstacles.
+2. **Task planning:** Determine which objects obstruct the target and select an object to manipulate.
+3. **Grasp generation:** Generate language-guided 6-DoF grasp candidates for the selected object.
+4. **Feasibility and placement planning:** Evaluate grasp feasibility and select a suitable destination for objects that need to be moved.
+5. **Action execution:** Execute the planned action and update the scene representation.
+6. **Execution evaluation:** Assess the action outcome, detect failures, and evaluate progress toward the task goal.
+7. **Replanning:** If the target remains inaccessible or an action fails, revise the plan using the updated scene and repeat the process.
+
+This feedback loop allows the system to adapt its decisions across successive actions rather than relying on a fixed sequence of commands.
 
 The system separates two levels of reasoning:
 
